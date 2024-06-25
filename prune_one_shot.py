@@ -463,7 +463,7 @@ def train(hyp, opt, device, callbacks):
             f"Image sizes {imgsz} train, {imgsz} val\n"
             f"Using {train_loader.num_workers * WORLD_SIZE} dataloader workers\n"
             f"Logging results to {colorstr('bold', save_dir)}\n"
-            f"Starting training for {epochs} epochs..."
+            f"Starting training for {ret_epoch} epochs..."
         )
 
         for epoch in range(
