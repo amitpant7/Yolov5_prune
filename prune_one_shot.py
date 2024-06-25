@@ -236,139 +236,6 @@ def train(hyp, opt, device, callbacks):
         model = Model(cfg, ch=3, nc=nc, anchors=hyp.get("anchors")).to(device)  # create
     amp = check_amp(model)  # check AMP
 
-    # Freeze
-    freeze = [
-        f"model.{x}." for x in (freeze if len(freeze) > 1 else range(freeze[0]))
-    ]  # layers to freeze
-    for k, v in model.named_parameters():
-        v.requires_grad = True  # train all layers
-        # v.register_hook(lambda x: torch.nan_to_num(x))  # NaN to 0 (commented for erratic training results)
-        if any(x in k for x in freeze):
-            LOGGER.info(f"freezing {k}")
-            v.requires_grad = False
-
-    # Image size
-    gs = max(int(model.stride.max()), 32)  # grid size (max stride)
-    imgsz = check_img_size(opt.imgsz, gs, floor=gs * 2)  # verify imgsz is gs-multiple
-
-    # Batch size
-    if RANK == -1 and batch_size == -1:  # single-GPU only, estimate best batch size
-        batch_size = check_train_batch_size(model, imgsz, amp)
-        loggers.on_params_update({"batch_size": batch_size})
-
-    # Optimizer
-    nbs = 64  # nominal batch size
-    accumulate = max(round(nbs / batch_size), 1)  # accumulate loss before optimizing
-    hyp["weight_decay"] *= batch_size * accumulate / nbs  # scale weight_decay
-    optimizer = smart_optimizer(
-        model, opt.optimizer, hyp["lr0"], hyp["momentum"], hyp["weight_decay"]
-    )
-
-    # Scheduler
-    if opt.cos_lr:
-        lf = one_cycle(1, hyp["lrf"], epochs)  # cosine 1->hyp['lrf']
-    else:
-
-        def lf(x):
-            return (1 - x / epochs) * (1.0 - hyp["lrf"]) + hyp["lrf"]  # linear
-
-    scheduler = lr_scheduler.LambdaLR(
-        optimizer, lr_lambda=lf
-    )  # plot_lr_scheduler(optimizer, scheduler, epochs)
-
-    # EMA
-    ema = ModelEMA(model) if RANK in {-1, 0} else None
-
-    # Resume
-    best_fitness, start_epoch = 0.0, 0
-    if pretrained:
-        if resume:
-            best_fitness, start_epoch, epochs = smart_resume(
-                ckpt, optimizer, ema, weights, epochs, resume
-            )
-        del ckpt, csd
-
-    # DP mode
-    if cuda and RANK == -1 and torch.cuda.device_count() > 1:
-        LOGGER.warning(
-            "WARNING ⚠️ DP not recommended, use torch.distributed.run for best DDP Multi-GPU results.\n"
-            "See Multi-GPU Tutorial at https://docs.ultralytics.com/yolov5/tutorials/multi_gpu_training to get started."
-        )
-        model = torch.nn.DataParallel(model)
-
-    # SyncBatchNorm
-    if opt.sync_bn and cuda and RANK != -1:
-        model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model).to(device)
-        LOGGER.info("Using SyncBatchNorm()")
-
-    # Trainloader
-    train_loader, dataset = create_dataloader(
-        train_path,
-        imgsz,
-        batch_size // WORLD_SIZE,
-        gs,
-        single_cls,
-        hyp=hyp,
-        augment=True,
-        cache=None if opt.cache == "val" else opt.cache,
-        rect=opt.rect,
-        rank=LOCAL_RANK,
-        workers=workers,
-        image_weights=opt.image_weights,
-        quad=opt.quad,
-        prefix=colorstr("train: "),
-        shuffle=True,
-        seed=opt.seed,
-    )
-    labels = np.concatenate(dataset.labels, 0)
-    mlc = int(labels[:, 0].max())  # max label class
-    assert (
-        mlc < nc
-    ), f"Label class {mlc} exceeds nc={nc} in {data}. Possible class labels are 0-{nc - 1}"
-
-    # Process 0
-    if RANK in {-1, 0}:
-        val_loader = create_dataloader(
-            val_path,
-            imgsz,
-            batch_size // WORLD_SIZE * 2,
-            gs,
-            single_cls,
-            hyp=hyp,
-            cache=None if noval else opt.cache,
-            rect=True,
-            rank=-1,
-            workers=workers * 2,
-            pad=0.5,
-            prefix=colorstr("val: "),
-        )[0]
-
-        if not resume:
-            if not opt.noautoanchor:
-                check_anchors(
-                    dataset, model=model, thr=hyp["anchor_t"], imgsz=imgsz
-                )  # run AutoAnchor
-            model.half().float()  # pre-reduce anchor precision
-
-        callbacks.run("on_pretrain_routine_end", labels, names)
-
-    # DDP mode
-    if cuda and RANK != -1:
-        model = smart_DDP(model)
-
-    # Model attributes
-    nl = de_parallel(model).model[-1].nl  # number of detection layers (to scale hyps)
-    hyp["box"] *= 3 / nl  # scale to layers
-    hyp["cls"] *= nc / 80 * 3 / nl  # scale to classes and layers
-    hyp["obj"] *= (imgsz / 640) ** 2 * 3 / nl  # scale to image size and layers
-    hyp["label_smoothing"] = opt.label_smoothing
-    model.nc = nc  # attach number of classes to model
-    model.hyp = hyp  # attach hyperparameters to model
-    model.class_weights = (
-        labels_to_class_weights(dataset.labels, nc).to(device) * nc
-    )  # attach class weights
-    model.names = names
-
     ##start model pruning##
     import torch_pruning as tp
 
@@ -429,6 +296,145 @@ def train(hyp, opt, device, callbacks):
         print(f"\n----------- Retraining for {ret_epoch} epochs-------------")
 
         ## End model Prunint##
+
+        # Freeze
+        freeze = [
+            f"model.{x}." for x in (freeze if len(freeze) > 1 else range(freeze[0]))
+        ]  # layers to freeze
+        for k, v in model.named_parameters():
+            v.requires_grad = True  # train all layers
+            # v.register_hook(lambda x: torch.nan_to_num(x))  # NaN to 0 (commented for erratic training results)
+            if any(x in k for x in freeze):
+                LOGGER.info(f"freezing {k}")
+                v.requires_grad = False
+
+        # Image size
+        gs = max(int(model.stride.max()), 32)  # grid size (max stride)
+        imgsz = check_img_size(
+            opt.imgsz, gs, floor=gs * 2
+        )  # verify imgsz is gs-multiple
+
+        # Batch size
+        if RANK == -1 and batch_size == -1:  # single-GPU only, estimate best batch size
+            batch_size = check_train_batch_size(model, imgsz, amp)
+            loggers.on_params_update({"batch_size": batch_size})
+
+        # Optimizer
+        nbs = 64  # nominal batch size
+        accumulate = max(
+            round(nbs / batch_size), 1
+        )  # accumulate loss before optimizing
+        hyp["weight_decay"] *= batch_size * accumulate / nbs  # scale weight_decay
+        optimizer = smart_optimizer(
+            model, opt.optimizer, hyp["lr0"], hyp["momentum"], hyp["weight_decay"]
+        )
+
+        # Scheduler
+        if opt.cos_lr:
+            lf = one_cycle(1, hyp["lrf"], epochs)  # cosine 1->hyp['lrf']
+        else:
+
+            def lf(x):
+                return (1 - x / epochs) * (1.0 - hyp["lrf"]) + hyp["lrf"]  # linear
+
+        scheduler = lr_scheduler.LambdaLR(
+            optimizer, lr_lambda=lf
+        )  # plot_lr_scheduler(optimizer, scheduler, epochs)
+
+        # EMA
+        ema = ModelEMA(model) if RANK in {-1, 0} else None
+
+        # Resume
+        best_fitness, start_epoch = 0.0, 0
+        if pretrained:
+            if resume:
+                best_fitness, start_epoch, epochs = smart_resume(
+                    ckpt, optimizer, ema, weights, epochs, resume
+                )
+            del ckpt, csd
+
+        # DP mode
+        if cuda and RANK == -1 and torch.cuda.device_count() > 1:
+            LOGGER.warning(
+                "WARNING ⚠️ DP not recommended, use torch.distributed.run for best DDP Multi-GPU results.\n"
+                "See Multi-GPU Tutorial at https://docs.ultralytics.com/yolov5/tutorials/multi_gpu_training to get started."
+            )
+            model = torch.nn.DataParallel(model)
+
+        # SyncBatchNorm
+        if opt.sync_bn and cuda and RANK != -1:
+            model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model).to(device)
+            LOGGER.info("Using SyncBatchNorm()")
+
+        # Trainloader
+        train_loader, dataset = create_dataloader(
+            train_path,
+            imgsz,
+            batch_size // WORLD_SIZE,
+            gs,
+            single_cls,
+            hyp=hyp,
+            augment=True,
+            cache=None if opt.cache == "val" else opt.cache,
+            rect=opt.rect,
+            rank=LOCAL_RANK,
+            workers=workers,
+            image_weights=opt.image_weights,
+            quad=opt.quad,
+            prefix=colorstr("train: "),
+            shuffle=True,
+            seed=opt.seed,
+        )
+        labels = np.concatenate(dataset.labels, 0)
+        mlc = int(labels[:, 0].max())  # max label class
+        assert (
+            mlc < nc
+        ), f"Label class {mlc} exceeds nc={nc} in {data}. Possible class labels are 0-{nc - 1}"
+
+        # Process 0
+        if RANK in {-1, 0}:
+            val_loader = create_dataloader(
+                val_path,
+                imgsz,
+                batch_size // WORLD_SIZE * 2,
+                gs,
+                single_cls,
+                hyp=hyp,
+                cache=None if noval else opt.cache,
+                rect=True,
+                rank=-1,
+                workers=workers * 2,
+                pad=0.5,
+                prefix=colorstr("val: "),
+            )[0]
+
+            if not resume:
+                if not opt.noautoanchor:
+                    check_anchors(
+                        dataset, model=model, thr=hyp["anchor_t"], imgsz=imgsz
+                    )  # run AutoAnchor
+                model.half().float()  # pre-reduce anchor precision
+
+            callbacks.run("on_pretrain_routine_end", labels, names)
+
+        # DDP mode
+        if cuda and RANK != -1:
+            model = smart_DDP(model)
+
+        # Model attributes
+        nl = (
+            de_parallel(model).model[-1].nl
+        )  # number of detection layers (to scale hyps)
+        hyp["box"] *= 3 / nl  # scale to layers
+        hyp["cls"] *= nc / 80 * 3 / nl  # scale to classes and layers
+        hyp["obj"] *= (imgsz / 640) ** 2 * 3 / nl  # scale to image size and layers
+        hyp["label_smoothing"] = opt.label_smoothing
+        model.nc = nc  # attach number of classes to model
+        model.hyp = hyp  # attach hyperparameters to model
+        model.class_weights = (
+            labels_to_class_weights(dataset.labels, nc).to(device) * nc
+        )  # attach class weights
+        model.names = names
 
         # -----------------------------------------
         # Start training
