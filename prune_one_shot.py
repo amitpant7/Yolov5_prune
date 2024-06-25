@@ -236,49 +236,6 @@ def train(hyp, opt, device, callbacks):
         model = Model(cfg, ch=3, nc=nc, anchors=hyp.get("anchors")).to(device)  # create
     amp = check_amp(model)  # check AMP
 
-    ##start model pruning##
-    import torch_pruning as tp
-
-    torch.use_deterministic_algorithms(True, warn_only=True)
-
-    ignored_layers = [
-        model.model[0],
-        model.model[1],
-        model.model[2],
-        model.model[-2],
-        model.model[-1],
-    ]
-
-    example_inputs = torch.randn(1, 3, 416, 416).to(device)
-    imp = tp.importance.LAMPImportance()
-
-    ratio = float(opt.prune_ratio)  # need to make it passable parameter
-
-    base_macs, base_nparams = tp.utils.count_ops_and_params(model, example_inputs)
-
-    print("Starting current iteration pruning......")
-
-    print("Few layers are being ignored...........")
-
-    pruner = tp.pruner.MagnitudePruner(
-        model,
-        example_inputs,
-        global_pruning=True,  # If False, a uniform sparsity will be assigned to different layers.
-        importance=imp,  # importance criterion for parameter selection
-        iterative_steps=1,  # the number of iterations to achieve target sparsity
-        pruning_ratio=ratio,
-        ignored_layers=ignored_layers,
-    )
-
-    pruner.step()
-    print(f"Iteration ---------------------------")
-    macs, nparams = tp.utils.count_ops_and_params(model, example_inputs)
-
-    print("  Params: %.2f M => %.2f M" % (base_nparams / 1e6, nparams / 1e6))
-    print("  MACs: %.2f G => %.2f G" % (base_macs / 1e9, macs / 1e9))
-
-    ## End model Prunint##
-
     # Freeze
     freeze = [
         f"model.{x}." for x in (freeze if len(freeze) > 1 else range(freeze[0]))
@@ -412,285 +369,369 @@ def train(hyp, opt, device, callbacks):
     )  # attach class weights
     model.names = names
 
+    ##start model pruning##
+    import torch_pruning as tp
 
+    torch.use_deterministic_algorithms(True, warn_only=True)
 
-    #-----------------------------------------
-    # Start training
-    
-    
-    t0 = time.time()
-    nb = len(train_loader)  # number of batches
-    nw = max(
-        round(hyp["warmup_epochs"] * nb), 100
-    )  # number of warmup iterations, max(3 epochs, 100 iterations)
-    # nw = min(nw, (epochs - start_epoch) / 2 * nb)  # limit warmup to < 1/2 of training
-    last_opt_step = -1
-    maps = np.zeros(nc)  # mAP per class
-    results = (0, 0, 0, 0, 0, 0, 0)  # P, R, mAP@.5, mAP@.5-.95, val_loss(box, obj, cls)
-    scheduler.last_epoch = start_epoch - 1  # do not move
-    scaler = torch.cuda.amp.GradScaler(enabled=amp)
-    stopper, stop = EarlyStopping(patience=opt.patience), False
-    compute_loss = ComputeLoss(model)  # init loss class
-    callbacks.run("on_train_start")
-    LOGGER.info(
-        f"Image sizes {imgsz} train, {imgsz} val\n"
-        f"Using {train_loader.num_workers * WORLD_SIZE} dataloader workers\n"
-        f"Logging results to {colorstr('bold', save_dir)}\n"
-        f"Starting training for {epochs} epochs..."
+    prune_save_dir = "./prune"
+
+    # Create directory if it does not exist
+    if not os.path.exists(prune_save_dir):
+        os.makedirs(prune_save_dir)
+
+    ignored_layers = [
+        model.model[0],
+        model.model[1],
+        model.model[2],
+        model.model[-2],
+        model.model[-1],
+    ]
+
+    example_inputs = torch.randn(1, 3, 416, 416).to(device)
+    imp = tp.importance.LAMPImportance()
+
+    ratio = float(opt.prune_ratio)  # need to make it passable parameter
+    steps = int(opt.steps)
+
+    base_macs, base_nparams = tp.utils.count_ops_and_params(model, example_inputs)
+
+    print("Starting current iteration pruning......")
+
+    print("Few layers are being ignored...........\n", ignored_layers)
+
+    pruner = tp.pruner.MagnitudePruner(
+        model,
+        example_inputs,
+        global_pruning=True,  # If False, a uniform sparsity will be assigned to different layers.
+        importance=imp,  # importance criterion for parameter selection
+        iterative_steps=steps,  # the number of iterations to achieve target sparsity
+        pruning_ratio=ratio,
+        ignored_layers=ignored_layers,
     )
-    for epoch in range(
-        start_epoch, epochs
-    ):  # epoch ------------------------------------------------------------------
-        callbacks.run("on_train_epoch_start")
-        model.train()
 
-        # Update image weights (optional, single-GPU only)
-        if opt.image_weights:
-            cw = (
-                model.class_weights.cpu().numpy() * (1 - maps) ** 2 / nc
-            )  # class weights
-            iw = labels_to_image_weights(
-                dataset.labels, nc=nc, class_weights=cw
-            )  # image weights
-            dataset.indices = random.choices(
-                range(dataset.n), weights=iw, k=dataset.n
-            )  # rand weighted idx
-
-        # Update mosaic border (optional)
-        # b = int(random.uniform(0.25 * imgsz, 0.75 * imgsz + gs) // gs * gs)
-        # dataset.mosaic_border = [b - imgsz, -b]  # height, width borders
-
-        mloss = torch.zeros(3, device=device)  # mean losses
-        if RANK != -1:
-            train_loader.sampler.set_epoch(epoch)
-        pbar = enumerate(train_loader)
-        LOGGER.info(
-            ("\n" + "%11s" * 7)
-            % (
-                "Epoch",
-                "GPU_mem",
-                "box_loss",
-                "obj_loss",
-                "cls_loss",
-                "Instances",
-                "Size",
-            )
+    for i in range(steps):
+        pruner.step()
+        print(f"Iteration   {i+1} / {steps}---------------------------")
+        macs, nparams = tp.utils.count_ops_and_params(model, example_inputs)
+        print(
+            "  Iter %d/%d, Params: %.2f M => %.2f M"
+            % (i + 1, steps, base_nparams / 1e6, nparams / 1e6)
         )
-        if RANK in {-1, 0}:
-            pbar = tqdm(pbar, total=nb, bar_format=TQDM_BAR_FORMAT)  # progress bar
-        optimizer.zero_grad()
-        for i, (
-            imgs,
-            targets,
-            paths,
-            _,
-        ) in (
-            pbar
-        ):  # batch -------------------------------------------------------------
-            callbacks.run("on_train_batch_start")
-            ni = i + nb * epoch  # number integrated batches (since train start)
-            imgs = (
-                imgs.to(device, non_blocking=True).float() / 255
-            )  # uint8 to float32, 0-255 to 0.0-1.0
+        print(
+            "  Iter %d/%d, MACs: %.2f G => %.2f G"
+            % (i + 1, steps, base_macs / 1e9, macs / 1e9)
+        )
 
-            # Warmup
-            if ni <= nw:
-                xi = [0, nw]  # x interp
-                # compute_loss.gr = np.interp(ni, xi, [0.0, 1.0])  # iou loss ratio (obj_loss = 1.0 or iou)
-                accumulate = max(1, np.interp(ni, xi, [1, nbs / batch_size]).round())
-                for j, x in enumerate(optimizer.param_groups):
-                    # bias lr falls from 0.1 to lr0, all other lrs rise from 0.0 to lr0
-                    x["lr"] = np.interp(
-                        ni,
-                        xi,
-                        [
-                            hyp["warmup_bias_lr"] if j == 0 else 0.0,
-                            x["initial_lr"] * lf(epoch),
-                        ],
+        print("=" * 16)
+        # evaluate_model(model)
+        ret_epoch = 2 + i
+        print(f"\n----------- Retraining for {ret_epoch} epochs-------------")
+
+        ## End model Prunint##
+
+        # -----------------------------------------
+        # Start training
+
+        t0 = time.time()
+        nb = len(train_loader)  # number of batches
+        nw = max(
+            round(hyp["warmup_epochs"] * nb), 100
+        )  # number of warmup iterations, max(3 epochs, 100 iterations)
+        # nw = min(nw, (epochs - start_epoch) / 2 * nb)  # limit warmup to < 1/2 of training
+        last_opt_step = -1
+        maps = np.zeros(nc)  # mAP per class
+        results = (
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        )  # P, R, mAP@.5, mAP@.5-.95, val_loss(box, obj, cls)
+        scheduler.last_epoch = start_epoch - 1  # do not move
+        scaler = torch.cuda.amp.GradScaler(enabled=amp)
+        stopper, stop = EarlyStopping(patience=opt.patience), False
+        compute_loss = ComputeLoss(model)  # init loss class
+        callbacks.run("on_train_start")
+        LOGGER.info(
+            f"Image sizes {imgsz} train, {imgsz} val\n"
+            f"Using {train_loader.num_workers * WORLD_SIZE} dataloader workers\n"
+            f"Logging results to {colorstr('bold', save_dir)}\n"
+            f"Starting training for {epochs} epochs..."
+        )
+
+        for epoch in range(
+            start_epoch, ret_epoch
+        ):  # epoch ------------------------------------------------------------------
+            callbacks.run("on_train_epoch_start")
+            model.train()
+
+            # Update image weights (optional, single-GPU only)
+            if opt.image_weights:
+                cw = (
+                    model.class_weights.cpu().numpy() * (1 - maps) ** 2 / nc
+                )  # class weights
+                iw = labels_to_image_weights(
+                    dataset.labels, nc=nc, class_weights=cw
+                )  # image weights
+                dataset.indices = random.choices(
+                    range(dataset.n), weights=iw, k=dataset.n
+                )  # rand weighted idx
+
+            # Update mosaic border (optional)
+            # b = int(random.uniform(0.25 * imgsz, 0.75 * imgsz + gs) // gs * gs)
+            # dataset.mosaic_border = [b - imgsz, -b]  # height, width borders
+
+            mloss = torch.zeros(3, device=device)  # mean losses
+            if RANK != -1:
+                train_loader.sampler.set_epoch(epoch)
+            pbar = enumerate(train_loader)
+            LOGGER.info(
+                ("\n" + "%11s" * 7)
+                % (
+                    "Epoch",
+                    "GPU_mem",
+                    "box_loss",
+                    "obj_loss",
+                    "cls_loss",
+                    "Instances",
+                    "Size",
+                )
+            )
+            if RANK in {-1, 0}:
+                pbar = tqdm(pbar, total=nb, bar_format=TQDM_BAR_FORMAT)  # progress bar
+            optimizer.zero_grad()
+            for i, (
+                imgs,
+                targets,
+                paths,
+                _,
+            ) in (
+                pbar
+            ):  # batch -------------------------------------------------------------
+                callbacks.run("on_train_batch_start")
+                ni = i + nb * epoch  # number integrated batches (since train start)
+                imgs = (
+                    imgs.to(device, non_blocking=True).float() / 255
+                )  # uint8 to float32, 0-255 to 0.0-1.0
+
+                # Warmup
+                if ni <= nw:
+                    xi = [0, nw]  # x interp
+                    # compute_loss.gr = np.interp(ni, xi, [0.0, 1.0])  # iou loss ratio (obj_loss = 1.0 or iou)
+                    accumulate = max(
+                        1, np.interp(ni, xi, [1, nbs / batch_size]).round()
                     )
-                    if "momentum" in x:
-                        x["momentum"] = np.interp(
-                            ni, xi, [hyp["warmup_momentum"], hyp["momentum"]]
+                    for j, x in enumerate(optimizer.param_groups):
+                        # bias lr falls from 0.1 to lr0, all other lrs rise from 0.0 to lr0
+                        x["lr"] = np.interp(
+                            ni,
+                            xi,
+                            [
+                                hyp["warmup_bias_lr"] if j == 0 else 0.0,
+                                x["initial_lr"] * lf(epoch),
+                            ],
+                        )
+                        if "momentum" in x:
+                            x["momentum"] = np.interp(
+                                ni, xi, [hyp["warmup_momentum"], hyp["momentum"]]
+                            )
+
+                # Multi-scale
+                if opt.multi_scale:
+                    sz = (
+                        random.randrange(int(imgsz * 0.5), int(imgsz * 1.5) + gs)
+                        // gs
+                        * gs
+                    )  # size
+                    sf = sz / max(imgs.shape[2:])  # scale factor
+                    if sf != 1:
+                        ns = [
+                            math.ceil(x * sf / gs) * gs for x in imgs.shape[2:]
+                        ]  # new shape (stretched to gs-multiple)
+                        imgs = nn.functional.interpolate(
+                            imgs, size=ns, mode="bilinear", align_corners=False
                         )
 
-            # Multi-scale
-            if opt.multi_scale:
-                sz = (
-                    random.randrange(int(imgsz * 0.5), int(imgsz * 1.5) + gs) // gs * gs
-                )  # size
-                sf = sz / max(imgs.shape[2:])  # scale factor
-                if sf != 1:
-                    ns = [
-                        math.ceil(x * sf / gs) * gs for x in imgs.shape[2:]
-                    ]  # new shape (stretched to gs-multiple)
-                    imgs = nn.functional.interpolate(
-                        imgs, size=ns, mode="bilinear", align_corners=False
+                # Forward
+                with torch.cuda.amp.autocast(amp):
+                    pred = model(imgs)  # forward
+                    loss, loss_items = compute_loss(
+                        pred, targets.to(device)
+                    )  # loss scaled by batch_size
+                    if RANK != -1:
+                        loss *= (
+                            WORLD_SIZE  # gradient averaged between devices in DDP mode
+                        )
+                    if opt.quad:
+                        loss *= 4.0
+
+                # Backward
+                scaler.scale(loss).backward()
+
+                # Optimize - https://pytorch.org/docs/master/notes/amp_examples.html
+                if ni - last_opt_step >= accumulate:
+                    scaler.unscale_(optimizer)  # unscale gradients
+                    torch.nn.utils.clip_grad_norm_(
+                        model.parameters(), max_norm=10.0
+                    )  # clip gradients
+                    scaler.step(optimizer)  # optimizer.step
+                    scaler.update()
+                    optimizer.zero_grad()
+                    if ema:
+                        ema.update(model)
+                    last_opt_step = ni
+
+                # Log
+                if RANK in {-1, 0}:
+                    mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
+                    mem = f"{torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0:.3g}G"  # (GB)
+                    pbar.set_description(
+                        ("%11s" * 2 + "%11.4g" * 5)
+                        % (
+                            f"{epoch}/{epochs - 1}",
+                            mem,
+                            *mloss,
+                            targets.shape[0],
+                            imgs.shape[-1],
+                        )
                     )
+                    callbacks.run(
+                        "on_train_batch_end",
+                        model,
+                        ni,
+                        imgs,
+                        targets,
+                        paths,
+                        list(mloss),
+                    )
+                    if callbacks.stop_training:
+                        return
+                # end batch ------------------------------------------------------------------------------------------------
 
-            # Forward
-            with torch.cuda.amp.autocast(amp):
-                pred = model(imgs)  # forward
-                loss, loss_items = compute_loss(
-                    pred, targets.to(device)
-                )  # loss scaled by batch_size
-                if RANK != -1:
-                    loss *= WORLD_SIZE  # gradient averaged between devices in DDP mode
-                if opt.quad:
-                    loss *= 4.0
+            # Scheduler
+            lr = [x["lr"] for x in optimizer.param_groups]  # for loggers
+            scheduler.step()
 
-            # Backward
-            scaler.scale(loss).backward()
-
-            # Optimize - https://pytorch.org/docs/master/notes/amp_examples.html
-            if ni - last_opt_step >= accumulate:
-                scaler.unscale_(optimizer)  # unscale gradients
-                torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), max_norm=10.0
-                )  # clip gradients
-                scaler.step(optimizer)  # optimizer.step
-                scaler.update()
-                optimizer.zero_grad()
-                if ema:
-                    ema.update(model)
-                last_opt_step = ni
-
-            # Log
             if RANK in {-1, 0}:
-                mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
-                mem = f"{torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0:.3g}G"  # (GB)
-                pbar.set_description(
-                    ("%11s" * 2 + "%11.4g" * 5)
-                    % (
-                        f"{epoch}/{epochs - 1}",
-                        mem,
-                        *mloss,
-                        targets.shape[0],
-                        imgs.shape[-1],
-                    )
+                # mAP
+                callbacks.run("on_train_epoch_end", epoch=epoch)
+                ema.update_attr(
+                    model,
+                    include=["yaml", "nc", "hyp", "names", "stride", "class_weights"],
                 )
-                callbacks.run(
-                    "on_train_batch_end", model, ni, imgs, targets, paths, list(mloss)
-                )
-                if callbacks.stop_training:
-                    return
-            # end batch ------------------------------------------------------------------------------------------------
-
-        # Scheduler
-        lr = [x["lr"] for x in optimizer.param_groups]  # for loggers
-        scheduler.step()
-
-        if RANK in {-1, 0}:
-            # mAP
-            callbacks.run("on_train_epoch_end", epoch=epoch)
-            ema.update_attr(
-                model, include=["yaml", "nc", "hyp", "names", "stride", "class_weights"]
-            )
-            final_epoch = (epoch + 1 == epochs) or stopper.possible_stop
-            if not noval or final_epoch:  # Calculate mAP
-                results, maps, _ = validate.run(
-                    data_dict,
-                    batch_size=batch_size // WORLD_SIZE * 2,
-                    imgsz=imgsz,
-                    half=amp,
-                    model=ema.ema,
-                    single_cls=single_cls,
-                    dataloader=val_loader,
-                    save_dir=save_dir,
-                    plots=False,
-                    callbacks=callbacks,
-                    compute_loss=compute_loss,
-                )
-
-            # Update best mAP
-            fi = fitness(
-                np.array(results).reshape(1, -1)
-            )  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
-            stop = stopper(epoch=epoch, fitness=fi)  # early stop check
-            if fi > best_fitness:
-                best_fitness = fi
-            log_vals = list(mloss) + list(results) + lr
-            callbacks.run("on_fit_epoch_end", log_vals, epoch, best_fitness, fi)
-
-            # Save model
-            if (not nosave) or (final_epoch and not evolve):  # if save
-                ckpt = {
-                    "epoch": epoch,
-                    "best_fitness": best_fitness,
-                    "model": deepcopy(de_parallel(model)).half(),
-                    "ema": deepcopy(ema.ema).half(),
-                    "updates": ema.updates,
-                    "optimizer": optimizer.state_dict(),
-                    "opt": vars(opt),
-                    "git": GIT_INFO,  # {remote, branch, commit} if a git repo
-                    "date": datetime.now().isoformat(),
-                }
-
-                # Save last, best and delete
-                torch.save(ckpt, last)
-                if best_fitness == fi:
-                    torch.save(ckpt, best)
-                if opt.save_period > 0 and epoch % opt.save_period == 0:
-                    torch.save(ckpt, w / f"epoch{epoch}.pt")
-                del ckpt
-                callbacks.run(
-                    "on_model_save", last, epoch, final_epoch, best_fitness, fi
-                )
-
-        # EarlyStopping
-        if RANK != -1:  # if DDP training
-            broadcast_list = [stop if RANK == 0 else None]
-            dist.broadcast_object_list(
-                broadcast_list, 0
-            )  # broadcast 'stop' to all ranks
-            if RANK != 0:
-                stop = broadcast_list[0]
-        if stop:
-            break  # must break all DDP ranks
-
-        # end epoch ----------------------------------------------------------------------------------------------------
-    # end training -----------------------------------------------------------------------------------------------------
-    
-    
-    #---------------------------------------------------------------
-    if RANK in {-1, 0}:
-        LOGGER.info(
-            f"\n{epoch - start_epoch + 1} epochs completed in {(time.time() - t0) / 3600:.3f} hours."
-        )
-        for f in last, best:
-            if f.exists():
-                strip_optimizer(f)  # strip optimizers
-                if f is best:
-                    LOGGER.info(f"\nValidating {f}...")
-                    results, _, _ = validate.run(
+                final_epoch = (epoch + 1 == epochs) or stopper.possible_stop
+                if not noval or final_epoch:  # Calculate mAP
+                    results, maps, _ = validate.run(
                         data_dict,
                         batch_size=batch_size // WORLD_SIZE * 2,
                         imgsz=imgsz,
-                        model=attempt_load(f, device).half(),
-                        iou_thres=(
-                            0.65 if is_coco else 0.60
-                        ),  # best pycocotools at iou 0.65
+                        half=amp,
+                        model=ema.ema,
                         single_cls=single_cls,
                         dataloader=val_loader,
                         save_dir=save_dir,
-                        save_json=is_coco,
-                        verbose=True,
-                        plots=plots,
+                        plots=False,
                         callbacks=callbacks,
                         compute_loss=compute_loss,
-                    )  # val best model with plots
-                    if is_coco:
-                        callbacks.run(
-                            "on_fit_epoch_end",
-                            list(mloss) + list(results) + lr,
-                            epoch,
-                            best_fitness,
-                            fi,
+                    )
+
+                # Update best mAP
+                fi = fitness(
+                    np.array(results).reshape(1, -1)
+                )  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
+                stop = stopper(epoch=epoch, fitness=fi)  # early stop check
+                if fi > best_fitness:
+                    best_fitness = fi
+                log_vals = list(mloss) + list(results) + lr
+                callbacks.run("on_fit_epoch_end", log_vals, epoch, best_fitness, fi)
+
+                # Save model
+                if (not nosave) or (final_epoch and not evolve):  # if save
+                    ckpt = {
+                        "epoch": epoch,
+                        "best_fitness": best_fitness,
+                        "model": deepcopy(de_parallel(model)).half(),
+                        "ema": deepcopy(ema.ema).half(),
+                        "updates": ema.updates,
+                        "optimizer": optimizer.state_dict(),
+                        "opt": vars(opt),
+                        "git": GIT_INFO,  # {remote, branch, commit} if a git repo
+                        "date": datetime.now().isoformat(),
+                    }
+
+                    # Save last, best and delete
+
+                    torch.save(ckpt, last)
+                    if best_fitness == fi:
+                        torch.save(ckpt, best)
+                        torch.save(
+                            ckpt, f"{prune_save_dir}/yolo_prune_{int(ratio*100/i)}.pt"
                         )
 
-        callbacks.run("on_train_end", last, best, epoch, results)
+                    if opt.save_period > 0 and epoch % opt.save_period == 0:
+                        torch.save(ckpt, w / f"epoch{epoch}.pt")
+                    del ckpt
+                    callbacks.run(
+                        "on_model_save", last, epoch, final_epoch, best_fitness, fi
+                    )
 
-    torch.cuda.empty_cache()
-    return results
+            # EarlyStopping
+            if RANK != -1:  # if DDP training
+                broadcast_list = [stop if RANK == 0 else None]
+                dist.broadcast_object_list(
+                    broadcast_list, 0
+                )  # broadcast 'stop' to all ranks
+                if RANK != 0:
+                    stop = broadcast_list[0]
+            if stop:
+                break  # must break all DDP ranks
+
+            # end epoch ----------------------------------------------------------------------------------------------------
+        # end training -----------------------------------------------------------------------------------------------------
+
+        # ---------------------------------------------------------------
+        if RANK in {-1, 0}:
+            LOGGER.info(
+                f"\n{epoch - start_epoch + 1} epochs completed in {(time.time() - t0) / 3600:.3f} hours."
+            )
+            for f in last, best:
+                if f.exists():
+                    strip_optimizer(f)  # strip optimizers
+                    if f is best:
+                        LOGGER.info(f"\nValidating {f}...")
+                        results, _, _ = validate.run(
+                            data_dict,
+                            batch_size=batch_size // WORLD_SIZE * 2,
+                            imgsz=imgsz,
+                            model=attempt_load(f, device).half(),
+                            iou_thres=(
+                                0.65 if is_coco else 0.60
+                            ),  # best pycocotools at iou 0.65
+                            single_cls=single_cls,
+                            dataloader=val_loader,
+                            save_dir=save_dir,
+                            save_json=is_coco,
+                            verbose=True,
+                            plots=plots,
+                            callbacks=callbacks,
+                            compute_loss=compute_loss,
+                        )  # val best model with plots
+                        if is_coco:
+                            callbacks.run(
+                                "on_fit_epoch_end",
+                                list(mloss) + list(results) + lr,
+                                epoch,
+                                best_fitness,
+                                fi,
+                            )
+
+            callbacks.run("on_train_end", last, best, epoch, results)
+
+        torch.cuda.empty_cache()
+        return results
 
 
 def parse_opt(known=False):
@@ -701,6 +742,7 @@ def parse_opt(known=False):
     )
 
     parser.add_argument("--prune_ratio", type=str, default=0.1, help="prune_percentage")
+    parser.add_argument("--steps", type=int, default=1, help="steps")
     parser.add_argument("--cfg", type=str, default="", help="model.yaml path")
     parser.add_argument(
         "--data", type=str, default=ROOT / "data/coco128.yaml", help="dataset.yaml path"
