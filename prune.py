@@ -239,42 +239,42 @@ def train(hyp, opt, device, callbacks):
     ##start model pruning##
     import torch_pruning as tp
 
-    print(model)
-    ignored_layers = [
-        model.model[0],
-        model.model[1],
-        model.model[2],
-        model.model[-2],
-        model.model[-1],
-    ]
+    with torch.set_deterministic(False):
+        ignored_layers = [
+            model.model[0],
+            model.model[1],
+            model.model[2],
+            model.model[-2],
+            model.model[-1],
+        ]
 
-    example_inputs = torch.randn(1, 3, 416, 416).to(device)
-    imp = tp.importance.LAMPImportance()
+        example_inputs = torch.randn(1, 3, 416, 416).to(device)
+        imp = tp.importance.LAMPImportance()
 
-    ratio = 0.1  # need to make it passable parameter
+        ratio = 0.1  # need to make it passable parameter
 
-    base_macs, base_nparams = tp.utils.count_ops_and_params(model, example_inputs)
+        base_macs, base_nparams = tp.utils.count_ops_and_params(model, example_inputs)
 
-    print("Starting Model pruning")
-    
-    print('Ignoring these layers:\n', ignored_layers)
+        print("Starting Model pruning")
 
-    pruner = tp.pruner.MagnitudePruner(
-        model,
-        example_inputs,
-        global_pruning=True,  # If False, a uniform sparsity will be assigned to different layers.
-        importance=imp,  # importance criterion for parameter selection
-        iterative_steps=1,  # the number of iterations to achieve target sparsity
-        pruning_ratio=ratio,
-        ignored_layers=ignored_layers,
-    )
+        print("Ignoring these layers:\n", ignored_layers)
 
-    pruner.step()
-    print(f"Iteration ---------------------------")
-    macs, nparams = tp.utils.count_ops_and_params(model, example_inputs)
+        pruner = tp.pruner.MagnitudePruner(
+            model,
+            example_inputs,
+            global_pruning=True,  # If False, a uniform sparsity will be assigned to different layers.
+            importance=imp,  # importance criterion for parameter selection
+            iterative_steps=1,  # the number of iterations to achieve target sparsity
+            pruning_ratio=ratio,
+            ignored_layers=ignored_layers,
+        )
 
-    print("  Params: %.2f M => %.2f M" % (base_nparams / 1e6, nparams / 1e6))
-    print("  MACs: %.2f G => %.2f G" % (base_macs / 1e9, macs / 1e9))
+        pruner.step()
+        print(f"Iteration ---------------------------")
+        macs, nparams = tp.utils.count_ops_and_params(model, example_inputs)
+
+        print("  Params: %.2f M => %.2f M" % (base_nparams / 1e6, nparams / 1e6))
+        print("  MACs: %.2f G => %.2f G" % (base_macs / 1e9, macs / 1e9))
 
     ## End model Prunint##
 
