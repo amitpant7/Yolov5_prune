@@ -256,9 +256,11 @@ def train(hyp, opt, device, callbacks):
     base_macs, base_nparams = tp.utils.count_ops_and_params(model, example_inputs)
 
     print("Starting Model pruning")
+    
+    print('Ignoring these layers:\n', ignored_layers)
 
     pruner = tp.pruner.MagnitudePruner(
-        model.model,
+        model,
         example_inputs,
         global_pruning=True,  # If False, a uniform sparsity will be assigned to different layers.
         importance=imp,  # importance criterion for parameter selection
