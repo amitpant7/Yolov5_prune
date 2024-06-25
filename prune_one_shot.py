@@ -236,6 +236,26 @@ def train(hyp, opt, device, callbacks):
         model = Model(cfg, ch=3, nc=nc, anchors=hyp.get("anchors")).to(device)  # create
     amp = check_amp(model)  # check AMP
 
+    # Freeze
+    freeze = [
+        f"model.{x}." for x in (freeze if len(freeze) > 1 else range(freeze[0]))
+    ]  # layers to freeze
+    for k, v in model.named_parameters():
+        v.requires_grad = True  # train all layers
+        # v.register_hook(lambda x: torch.nan_to_num(x))  # NaN to 0 (commented for erratic training results)
+        if any(x in k for x in freeze):
+            LOGGER.info(f"freezing {k}")
+            v.requires_grad = False
+
+        # Image size
+    gs = max(int(model.stride.max()), 32)  # grid size (max stride)
+    imgsz = check_img_size(opt.imgsz, gs, floor=gs * 2)  # verify imgsz is gs-multiple
+
+    # Batch size
+    if RANK == -1 and batch_size == -1:  # single-GPU only, estimate best batch size
+        batch_size = check_train_batch_size(model, imgsz, amp)
+        loggers.on_params_update({"batch_size": batch_size})
+
     ##start model pruning##
     import torch_pruning as tp
 
@@ -296,28 +316,6 @@ def train(hyp, opt, device, callbacks):
         print(f"\n----------- Retraining for {ret_epoch} epochs-------------")
 
         ## End model Prunint##
-
-        # Freeze
-        freeze = [
-            f"model.{x}." for x in (freeze if len(freeze) > 1 else range(freeze[0]))
-        ]  # layers to freeze
-        for k, v in model.named_parameters():
-            v.requires_grad = True  # train all layers
-            # v.register_hook(lambda x: torch.nan_to_num(x))  # NaN to 0 (commented for erratic training results)
-            if any(x in k for x in freeze):
-                LOGGER.info(f"freezing {k}")
-                v.requires_grad = False
-
-        # Image size
-        gs = max(int(model.stride.max()), 32)  # grid size (max stride)
-        imgsz = check_img_size(
-            opt.imgsz, gs, floor=gs * 2
-        )  # verify imgsz is gs-multiple
-
-        # Batch size
-        if RANK == -1 and batch_size == -1:  # single-GPU only, estimate best batch size
-            batch_size = check_train_batch_size(model, imgsz, amp)
-            loggers.on_params_update({"batch_size": batch_size})
 
         # Optimizer
         nbs = 64  # nominal batch size
