@@ -239,7 +239,7 @@ def train(hyp, opt, device, callbacks):
     ##start model pruning##
     import torch_pruning as tp
 
-    with torch.set_deterministic(False):
+    with torch.backends.cudnn.flags(enabled=False):
         ignored_layers = [
             model.model[0],
             model.model[1],
