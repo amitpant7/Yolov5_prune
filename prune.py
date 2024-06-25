@@ -239,12 +239,13 @@ def train(hyp, opt, device, callbacks):
     ##start model pruning##
     import torch_pruning as tp
 
+    print(model)
     ignored_layers = [
-        model.model.model[0],
-        model.model.model[1],
-        model.model.model[2],
-        model.model.model[-2],
-        model.model.model[-1],
+        model.model[0],
+        model.model[1],
+        model.model[2],
+        model.model[-2],
+        model.model[-1],
     ]
 
     example_inputs = torch.randn(1, 3, 416, 416).to(device)
@@ -257,7 +258,7 @@ def train(hyp, opt, device, callbacks):
     print("Starting Model pruning")
 
     pruner = tp.pruner.MagnitudePruner(
-        model,
+        model.model,
         example_inputs,
         global_pruning=True,  # If False, a uniform sparsity will be assigned to different layers.
         importance=imp,  # importance criterion for parameter selection

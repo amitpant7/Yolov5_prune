@@ -315,6 +315,7 @@ def train(hyp, opt, device, callbacks):
     model.class_weights = labels_to_class_weights(dataset.labels, nc).to(device) * nc  # attach class weights
     model.names = names
 
+    
     # Start training
     t0 = time.time()
     nb = len(train_loader)  # number of batches
@@ -334,6 +335,9 @@ def train(hyp, opt, device, callbacks):
         f"Logging results to {colorstr('bold', save_dir)}\n"
         f'Starting training for {epochs} epochs...'
     )
+    
+    
+    
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         callbacks.run("on_train_epoch_start")
         model.train()
