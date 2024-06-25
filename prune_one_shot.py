@@ -321,7 +321,7 @@ def train(hyp, opt, device, callbacks):
 
         print("=" * 16)
         # evaluate_model(model)
-        ret_epoch = 2 + i
+        ret_epoch = 3 + i
         print(f"\n----------- Retraining for {ret_epoch} epochs-------------")
 
         ## End model Prunint##
