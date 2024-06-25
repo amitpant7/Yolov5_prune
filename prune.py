@@ -240,6 +240,7 @@ def train(hyp, opt, device, callbacks):
     import torch_pruning as tp
 
     torch.use_deterministic_algorithms(True, warn_only=True)
+
     ignored_layers = [
         model.model[0],
         model.model[1],
@@ -251,13 +252,13 @@ def train(hyp, opt, device, callbacks):
     example_inputs = torch.randn(1, 3, 416, 416).to(device)
     imp = tp.importance.LAMPImportance()
 
-    ratio = 0.1  # need to make it passable parameter
+    ratio = float(opt.prune_ratio)  # need to make it passable parameter
 
     base_macs, base_nparams = tp.utils.count_ops_and_params(model, example_inputs)
 
-    print("Starting Model pruning")
+    print("Starting current iteration pruning......")
 
-    print("Ignoring these layers:\n", ignored_layers)
+    print("Few layers are being ignored...........")
 
     pruner = tp.pruner.MagnitudePruner(
         model,
@@ -690,6 +691,8 @@ def parse_opt(known=False):
     parser.add_argument(
         "--weights", type=str, default=ROOT / "yolov5s.pt", help="initial weights path"
     )
+
+    parser.add_argument("--prune_ratio", type=str, default=0.1, help="prune_percentage")
     parser.add_argument("--cfg", type=str, default="", help="model.yaml path")
     parser.add_argument(
         "--data", type=str, default=ROOT / "data/coco128.yaml", help="dataset.yaml path"
