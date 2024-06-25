@@ -256,6 +256,15 @@ def train(hyp, opt, device, callbacks):
         batch_size = check_train_batch_size(model, imgsz, amp)
         loggers.on_params_update({"batch_size": batch_size})
 
+    # Resume
+    best_fitness, start_epoch = 0.0, 0
+    if pretrained:
+        if resume:
+            best_fitness, start_epoch, epochs = smart_resume(
+                ckpt, optimizer, ema, weights, epochs, resume
+            )
+            del ckpt, csd
+
     ##start model pruning##
     import torch_pruning as tp
 
@@ -341,15 +350,6 @@ def train(hyp, opt, device, callbacks):
 
         # EMA
         ema = ModelEMA(model) if RANK in {-1, 0} else None
-
-        # Resume
-        best_fitness, start_epoch = 0.0, 0
-        if pretrained:
-            if resume:
-                best_fitness, start_epoch, epochs = smart_resume(
-                    ckpt, optimizer, ema, weights, epochs, resume
-                )
-            del ckpt, csd
 
         # DP mode
         if cuda and RANK == -1 and torch.cuda.device_count() > 1:
