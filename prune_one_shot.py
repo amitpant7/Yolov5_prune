@@ -672,7 +672,8 @@ def train(hyp, opt, device, callbacks):
                     if best_fitness == fi:
                         torch.save(ckpt, best)
                         torch.save(
-                            ckpt, f"{prune_save_dir}/yolo_prune_{int(ratio*100/i)}.pt"
+                            ckpt,
+                            f"{prune_save_dir}/yolo_prune_{int(ratio*100/(i+1))}.pt",
                         )
 
                     if opt.save_period > 0 and epoch % opt.save_period == 0:
