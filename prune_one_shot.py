@@ -326,6 +326,8 @@ def train(hyp, opt, device, callbacks):
 
         ## End model Prunint##
 
+        best_fitness, start_epoch = 0.0, 0
+
         # Optimizer
         nbs = 64  # nominal batch size
         accumulate = max(
@@ -669,11 +671,12 @@ def train(hyp, opt, device, callbacks):
                     # Save last, best and delete
 
                     torch.save(ckpt, last)
+
                     if best_fitness == fi:
                         torch.save(ckpt, best)
                         torch.save(
                             ckpt,
-                            f"{prune_save_dir}/yolo_prune_{int(ratio*100/(i+1))}.pt",
+                            f"{prune_save_dir}/yolo_prune_best_{int(ratio*100/(i+1))}.pt",
                         )
 
                     if opt.save_period > 0 and epoch % opt.save_period == 0:
@@ -695,6 +698,7 @@ def train(hyp, opt, device, callbacks):
                 break  # must break all DDP ranks
 
             # end epoch ----------------------------------------------------------------------------------------------------
+        torch.save(ckpt, f"{prune_save_dir}/yolo_prune_last_{int(ratio*100/(i+1))}.pt")
         # end training -----------------------------------------------------------------------------------------------------
 
     # ---------------------------------------------------------------
