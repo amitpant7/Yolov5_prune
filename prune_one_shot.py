@@ -280,7 +280,6 @@ def train(hyp, opt, device, callbacks):
         model.model[0],
         model.model[1],
         model.model[2],
-        model.model[-2],
         model.model[-1],
     ]
 
