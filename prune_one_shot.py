@@ -296,7 +296,7 @@ def train(hyp, opt, device, callbacks):
 
     print("Few layers are being ignored...........\n", ignored_layers)
 
-    pruner = tp.pruner.MagnitudePruner(
+    pruner = tp.pruner.GrowingRegPruner(  # MagnitudePruner
         model,
         example_inputs,
         global_pruning=True,  # If False, a uniform sparsity will be assigned to different layers.
