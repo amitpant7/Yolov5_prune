@@ -258,6 +258,7 @@ def train(hyp, opt, device, callbacks):
 
     # Resume
     best_fitness, start_epoch = 0.0, 0
+    
     if pretrained:
         if resume:
             best_fitness, start_epoch, epochs = smart_resume(

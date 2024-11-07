@@ -412,12 +412,9 @@ def train(hyp, opt, device, callbacks):
     )  # attach class weights
     model.names = names
 
-
-
-    #-----------------------------------------
+    # -----------------------------------------
     # Start training
-    
-    
+
     t0 = time.time()
     nb = len(train_loader)  # number of batches
     nw = max(
@@ -649,9 +646,8 @@ def train(hyp, opt, device, callbacks):
 
         # end epoch ----------------------------------------------------------------------------------------------------
     # end training -----------------------------------------------------------------------------------------------------
-    
-    
-    #---------------------------------------------------------------
+
+    # ---------------------------------------------------------------
     if RANK in {-1, 0}:
         LOGGER.info(
             f"\n{epoch - start_epoch + 1} epochs completed in {(time.time() - t0) / 3600:.3f} hours."
